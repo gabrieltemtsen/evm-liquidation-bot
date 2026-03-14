@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>⚡ EVM Liquidation Bot</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0d0f14;
+      --bg-secondary: #141720;
+      --bg-card: #1a1f2e;
+      --bg-card-hover: #1f2538;
+      --border: #2a3045;
+      --text-primary: #e4e8f0;
+      --text-secondary: #8b94b3;
+      --accent-blue: #4f9cf9;
+      --accent-green: #22d3a0;
+      --accent-red: #ff4757;
+      --accent-yellow: #ffd32a;
+      --accent-purple: #a855f7;
+      --font-mono: 'Courier New', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+    }
+
+    /* ── Header ── */
+    header {
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+    .logo span { color: var(--accent-blue); }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent-green);
+      animation: pulse 2s infinite;
+    }
+    .status-dot.stopped { background: var(--accent-red); animation: none; }
+    .status-dot.error { background: var(--accent-yellow); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .header-right span { font-family: var(--font-mono); }
+
+    .dry-run-badge {
+      background: rgba(255, 215, 42, 0.15);
+      border: 1px solid rgba(255, 215, 42, 0.4);
+      color: var(--accent-yellow);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    /* ── Main layout ── */
+    main { padding: 24px 28px; max-width: 1600px; margin: 0 auto; }
+
+    /* ── Stats cards ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    @media (max-width: 1200px) { .stats-grid { grid-template-columns: repeat(2, 1fr); } }
+    @media (max-width: 600px) { .stats-grid { grid-template-columns: 1fr; } }
+
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 24px;
+      transition: border-color 0.2s;
+    }
+    .stat-card:hover { border-color: var(--accent-blue); }
+
+    .stat-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-secondary);
+      margin-bottom: 8px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      letter-spacing: -1px;
+    }
+
+    .stat-sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .green { color: var(--accent-green); }
+    .blue { color: var(--accent-blue); }
+    .yellow { color: var(--accent-yellow); }
+    .red { color: var(--accent-red); }
+    .purple { color: var(--accent-purple); }
+
+    /* ── Two-column layout ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 1000px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Panels ── */
+    .panel {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+    }
+
+    .panel-badge {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 2px 10px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--text-secondary);
+    }
+
+    /* ── Chart ── */
+    .chart-container {
+      padding: 20px;
+      height: 240px;
+      position: relative;
+    }
+
+    /* ── Tables ── */
+    .table-wrap { overflow-x: auto; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    thead th {
+      padding: 10px 16px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-secondary);
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-secondary);
+      white-space: nowrap;
+    }
+
+    tbody td {
+      padding: 10px 16px;
+      border-bottom: 1px solid rgba(42, 48, 69, 0.5);
+      font-family: var(--font-mono);
+      white-space: nowrap;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: var(--bg-card-hover); }
+
+    .empty-state {
+      text-align: center;
+      padding: 40px 20px;
+      color: var(--text-secondary);
+      font-size: 14px;
+    }
+
+    .hf-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .hf-liquidatable { background: rgba(255,71,87,0.2); color: var(--accent-red); }
+    .hf-critical { background: rgba(255,211,42,0.2); color: var(--accent-yellow); }
+    .hf-warning { background: rgba(79,156,249,0.2); color: var(--accent-blue); }
+    .hf-safe { background: rgba(34,211,160,0.15); color: var(--accent-green); }
+
+    .tx-link {
+      color: var(--accent-blue);
+      text-decoration: none;
+      font-size: 11px;
+    }
+    .tx-link:hover { text-decoration: underline; }
+
+    .success-icon { color: var(--accent-green); }
+    .fail-icon { color: var(--accent-red); }
+
+    .address {
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    /* ── Activity ticker ── */
+    #live-feed {
+      max-height: 320px;
+      overflow-y: auto;
+    }
+    #live-feed::-webkit-scrollbar { width: 4px; }
+    #live-feed::-webkit-scrollbar-track { background: transparent; }
+    #live-feed::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ── Block counter ── */
+    .block-counter {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .block-counter .dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--accent-green);
+    }
+
+    /* ── Flash ── */
+    @keyframes flashGreen {
+      0% { background: rgba(34,211,160,0.2); }
+      100% { background: transparent; }
+    }
+    .flash-green { animation: flashGreen 1s ease-out; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <div class="logo">⚡ <span>EVM Liquidation Bot</span></div>
+    <div id="status-badge" class="status-badge">
+      <div id="status-dot" class="status-dot stopped"></div>
+      <span id="status-text">CONNECTING</span>
+    </div>
+  </div>
+  <div class="header-right">
+    <span id="dry-run-badge" class="dry-run-badge" style="display:none">DRY RUN</span>
+    <div class="block-counter">
+      <div class="dot"></div>
+      <span>Block <span id="block-num" style="color:var(--text-primary)">–</span></span>
+    </div>
+    <span id="chain-name" style="color:var(--accent-blue)">–</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- Stats Cards -->
+  <div class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label">Total Profit (ETH)</div>
+      <div id="total-profit" class="stat-value green">0.0000</div>
+      <div class="stat-sub">Cumulative realized profit</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Liquidations Today</div>
+      <div id="liq-today" class="stat-value blue">0</div>
+      <div class="stat-sub">Successful liquidations</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Positions Monitored</div>
+      <div id="pos-count" class="stat-value purple">0</div>
+      <div class="stat-sub"><span id="liq-count" class="red">0</span> liquidatable now</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Success Rate</div>
+      <div id="success-rate" class="stat-value yellow">0%</div>
+      <div class="stat-sub"><span id="total-attempts">0</span> attempts total</div>
+    </div>
+  </div>
+
+  <!-- Profit Chart + Live Liquidations -->
+  <div class="two-col">
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">📈 Profit Over Time</div>
+        <span id="profit-today" class="panel-badge">+0.000 ETH today</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="profitChart"></canvas>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">⚡ Recent Liquidations</div>
+        <span id="liq-badge" class="panel-badge">0 total</span>
+      </div>
+      <div class="table-wrap">
+        <div id="live-feed">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Borrower</th>
+                <th>Pair</th>
+                <th>Profit</th>
+                <th>Tx</th>
+              </tr>
+            </thead>
+            <tbody id="liq-table-body">
+              <tr><td colspan="5" class="empty-state">No liquidations yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- At-risk Positions -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">🔍 At-Risk Positions</div>
+      <span id="positions-badge" class="panel-badge">0 near liquidation</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Borrower</th>
+            <th>Health Factor</th>
+            <th>Debt / Collateral</th>
+            <th>Best Pair</th>
+            <th>Debt to Cover</th>
+          </tr>
+        </thead>
+        <tbody id="positions-table-body">
+          <tr><td colspan="5" class="empty-state">No at-risk positions detected</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+{
+  "name": "evm-liquidation-bot",
+  "version": "1.0.0",
+  "description": "Production-ready EVM liquidation bot targeting Aave V3 with Flashbots integration",
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-vm-modules dist/bot/src/index.js",
+    "dev": "tsx bot/src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "test:fork": "ETH_RPC_HTTP=$ETH_RPC_HTTP hardhat test --network hardhat",
+    "deploy:mainnet": "hardhat run scripts/deploy.ts --network mainnet",
+    "deploy:arbitrum": "hardhat run scripts/deploy.ts --network arbitrum",
+    "deploy:base": "hardhat run scripts/deploy.ts --network base",
+    "deploy:local": "hardhat run scripts/deploy.ts --network hardhat",
+    "lint": "eslint 'bot/src/**/*.ts'",
+    "clean": "rimraf dist cache artifacts"
+  },
+  "keywords": [
+    "defi",
+    "liquidation",
+    "aave",
+    "flashloans",
+    "flashbots",
+    "ethereum",
+    "arbitrage",
+    "mev"
+  ],
+  "author": "gabrieltemtsen",
+  "license": "MIT",
+  "dependencies": {
+    "@aave/contract-helpers": "^1.37.1",
+    "@flashbots/ethers-provider-bundle": "^1.0.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "express": "^4.21.2",
+    "socket.io": "^4.8.1",
+    "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "hardhat": "^2.22.17",
+    "rimraf": "^6.0.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
