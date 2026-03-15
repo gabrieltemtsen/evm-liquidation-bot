@@ -85,8 +85,9 @@ export function calculateLiquidationProfit(params: LiquidationParams): ProfitEst
   const debtAmountBase =
     (debtToCover * debtPriceBase) / BigInt(10 ** debtDecimals);
 
-  // Flash loan fee (0.05% of debtToCover)
-  const flashLoanFeeBase = (debtAmountBase * FLASH_LOAN_PREMIUM) / BPS / 10n; // /10 because premium is 0.05%
+  // Flash loan fee: 0.05% = 5 / 10000 = FLASH_LOAN_PREMIUM / BPS
+  // FLASH_LOAN_PREMIUM = 5, BPS = 10000 → 5/10000 = 0.0005 = 0.05% ✓
+  const flashLoanFeeBase = (debtAmountBase * FLASH_LOAN_PREMIUM) / BPS;
 
   // Collateral received = debt * liquidationBonus / 10000
   // liquidationBonus from Aave is e.g. 10500 meaning 105% → 5% bonus

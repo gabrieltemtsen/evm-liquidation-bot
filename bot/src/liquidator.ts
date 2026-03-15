@@ -5,11 +5,12 @@ import { FlashbotsSubmitter } from './flashbots.js';
 import { config } from './utils/config.js';
 import logger from './utils/logger.js';
 import {
-  calculateLiquidationProfit,
   estimateGasUnits,
   applySlippage,
   formatHealthFactor,
   ProfitEstimate,
+  PairOption,
+  findMostProfitablePair,
 } from './calculator.js';
 
 // ─── Contract ABIs ────────────────────────────────────────────────────────────
@@ -192,25 +193,24 @@ export class Liquidator extends EventEmitter {
   }
 
   private async executeLiquidation(position: LiquidatablePosition): Promise<void> {
-    const pair = position.bestPair!;
     this.stats.totalAttempts++;
     this.stats.lastActivity = new Date();
-
     this.resetDailyStatsIfNeeded();
 
+    // Placeholder result — will be updated once we select the best pair
     const result: LiquidationResult = {
       success: false,
       borrower: position.borrower,
-      collateralAsset: pair.collateralAsset,
-      debtAsset: pair.debtAsset,
-      debtCovered: pair.debtToCover,
+      collateralAsset: position.bestPair?.collateralAsset ?? '',
+      debtAsset: position.bestPair?.debtAsset ?? '',
+      debtCovered: position.bestPair?.debtToCover ?? 0n,
       profit: 0n,
       dryRun: config.dryRun,
       timestamp: new Date(),
     };
 
     try {
-      // ── Step 1: Get current gas price ───────────────────────────────────────
+      // ── Step 1: Check gas price early ──────────────────────────────────────
       const feeData = await this.provider.getFeeData();
       const gasPriceWei = feeData.gasPrice || ethers.parseUnits('30', 'gwei');
 
@@ -224,59 +224,92 @@ export class Liquidator extends EventEmitter {
         return;
       }
 
-      // ── Step 2: Get asset prices ─────────────────────────────────────────────
-      const prices = await this.getAssetPrices([pair.collateralAsset, pair.debtAsset]);
-      const collateralPriceBase = prices[0];
-      const debtPriceBase = prices[1];
+      // ── Step 2: Fetch prices for ALL assets in the position ─────────────────
+      // Preserve original address casing for oracle calls; use lowercase as map keys
+      const collateralAddrs = position.collateralReserves.map(r => r.asset);
+      const debtAddrs = position.debtReserves.map(r => r.asset);
+      const uniqueAddrs = [...new Set([...collateralAddrs, ...debtAddrs])];
+
       const ethPriceBase = await this.getEthPrice();
+      const priceArray = await this.getAssetPrices(uniqueAddrs);
+      const priceMap = new Map(uniqueAddrs.map((addr, i) => [addr.toLowerCase(), priceArray[i]]));
 
-      // ── Step 3: Estimate profitability ───────────────────────────────────────
+      // ── Step 3: Build all possible pairs with correct decimals ──────────────
       const gasUnits = estimateGasUnits();
-      const profitEstimate = calculateLiquidationProfit({
-        debtToCover: pair.debtToCover,
-        collateralAsset: pair.collateralAsset,
-        debtAsset: pair.debtAsset,
-        liquidationBonus: pair.liquidationBonus,
-        collateralPriceBase,
-        debtPriceBase,
-        collateralDecimals: 18, // Will be fetched properly in production
-        debtDecimals: 18,
-        gasEstimate: gasUnits,
-        gasPriceWei,
-        ethPriceBase,
-      });
+      const pairOptions: PairOption[] = [];
 
-      logger.info('Profitability estimate', {
-        borrower: position.borrower,
-        netProfitEth: ethers.formatEther(profitEstimate.netProfitEth),
-        isProfitable: profitEstimate.isProfitable,
-        reason: profitEstimate.reason,
-      });
+      for (const collateral of position.collateralReserves) {
+        for (const debt of position.debtReserves) {
+          const collateralPrice = priceMap.get(collateral.asset.toLowerCase()) ?? 0n;
+          const debtPrice = priceMap.get(debt.asset.toLowerCase()) ?? 0n;
+          if (collateralPrice === 0n || debtPrice === 0n) continue;
 
-      if (!profitEstimate.isProfitable) {
-        logger.info('Position not profitable, skipping', {
-          reason: profitEstimate.reason,
+          pairOptions.push({
+            collateralAsset: collateral.asset,
+            collateralSymbol: collateral.symbol,
+            debtAsset: debt.asset,
+            debtSymbol: debt.symbol,
+            debtToCover: debt.totalDebt / 2n, // Aave V3 max = 50% of debt
+            liquidationBonus: collateral.liquidationBonus,
+            collateralPriceBase: collateralPrice,
+            debtPriceBase: debtPrice,
+            collateralDecimals: collateral.decimals, // ✅ real decimals (USDC=6, WBTC=8, etc.)
+            debtDecimals: debt.decimals,             // ✅ real decimals
+          });
+        }
+      }
+
+      // ── Step 4: Select most profitable pair ─────────────────────────────────
+      const bestPairResult = findMostProfitablePair(pairOptions, gasUnits, gasPriceWei, ethPriceBase);
+
+      if (!bestPairResult) {
+        logger.info('No profitable pair found across all reserve combinations', {
+          borrower: position.borrower,
+          pairsEvaluated: pairOptions.length,
         });
-        result.error = profitEstimate.reason;
+        result.error = 'No profitable pair found';
         this.recordResult(result);
         return;
       }
 
-      // ── Step 4: Execute (or simulate in dry run) ─────────────────────────────
+      const { pair: bestPair, profit: profitEstimate } = bestPairResult;
+
+      // Update result with winning pair
+      result.collateralAsset = bestPair.collateralAsset;
+      result.debtAsset = bestPair.debtAsset;
+      result.debtCovered = bestPair.debtToCover;
+
+      logger.info('Best liquidation pair selected', {
+        borrower: position.borrower,
+        pair: `${bestPair.debtSymbol} debt → ${bestPair.collateralSymbol} collateral`,
+        debtToCover: ethers.formatUnits(bestPair.debtToCover, bestPair.debtDecimals),
+        netProfitEth: ethers.formatEther(profitEstimate.netProfitEth),
+        grossProfitUsd: (Number(profitEstimate.grossProfitBase) / 1e8).toFixed(4),
+        gasCostUsd: (Number(profitEstimate.gasCostBase) / 1e8).toFixed(4),
+      });
+
+      // ── Step 5: Execute (or simulate in dry run) ────────────────────────────
       if (config.dryRun) {
         logger.info('🔵 DRY RUN — would execute liquidation', {
           borrower: position.borrower,
-          collateral: pair.collateralSymbol,
-          debt: pair.debtSymbol,
-          debtToCover: ethers.formatUnits(pair.debtToCover, 18),
+          collateral: bestPair.collateralSymbol,
+          debt: bestPair.debtSymbol,
+          debtToCover: ethers.formatUnits(bestPair.debtToCover, bestPair.debtDecimals),
           estimatedProfitEth: ethers.formatEther(profitEstimate.netProfitEth),
         });
-
         result.success = true;
         result.profit = profitEstimate.netProfitEth;
       } else {
-        // Real execution
-        await this.submitLiquidation(position, pair, profitEstimate, gasPriceWei, result);
+        // Build the bestPair shape expected by submitLiquidation
+        const submitPair: NonNullable<LiquidatablePosition['bestPair']> = {
+          collateralAsset: bestPair.collateralAsset,
+          debtAsset: bestPair.debtAsset,
+          collateralSymbol: bestPair.collateralSymbol,
+          debtSymbol: bestPair.debtSymbol,
+          debtToCover: bestPair.debtToCover,
+          liquidationBonus: bestPair.liquidationBonus,
+        };
+        await this.submitLiquidation(position, submitPair, profitEstimate, gasPriceWei, result);
       }
 
       if (result.success) {
@@ -306,6 +339,24 @@ export class Liquidator extends EventEmitter {
     this.recordResult(result);
   }
 
+  /**
+   * Choose the best Uniswap V3 fee tier for a given token pair.
+   * Stable-stable → 100 (0.01%), stable-volatile → 500 (0.05%), else → 3000 (0.3%).
+   */
+  private selectPoolFee(collateralSymbol: string, debtSymbol: string): number {
+    const STABLES = new Set([
+      'USDC', 'USDT', 'DAI', 'BUSD', 'FRAX', 'LUSD', 'SUSD', 'GUSD', 'USDP',
+      'USDD', 'CRVUSD', 'TUSD', 'PYUSD', 'FDUSD',
+    ]);
+    const isStable = (s: string) => STABLES.has(s.toUpperCase().replace(/\.E$/, ''));
+    const colStable = isStable(collateralSymbol);
+    const debtStable = isStable(debtSymbol);
+
+    if (colStable && debtStable) return 100;   // 0.01% — stable-stable
+    if (colStable || debtStable) return 500;   // 0.05% — one stable
+    return 3000;                               // 0.3%  — volatile-volatile
+  }
+
   private async submitLiquidation(
     position: LiquidatablePosition,
     pair: NonNullable<LiquidatablePosition['bestPair']>,
@@ -320,8 +371,8 @@ export class Liquidator extends EventEmitter {
     // Apply slippage to min profit
     const minProfit = applySlippage(profitEstimate.netProfitEth, BigInt(config.maxSlippageBps));
 
-    // Pool fee for the Uniswap swap (default 0.3%)
-    const poolFee = 3000;
+    // Pick best Uniswap V3 fee tier based on token types
+    const poolFee = this.selectPoolFee(pair.collateralSymbol, pair.debtSymbol);
 
     if (config.chain.useFlashbots && this.flashbots) {
       // ── Flashbots submission ──────────────────────────────────────────────

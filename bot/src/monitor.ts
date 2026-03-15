@@ -79,6 +79,17 @@ export class PositionMonitor extends EventEmitter {
     logger.warn('Reconnecting WebSocket provider...');
     try {
       await new Promise((resolve) => setTimeout(resolve, 5000));
+
+      // Remove all listeners from the old provider before replacing it,
+      // otherwise 'block' and 'error' events fire multiple times per block
+      // after each reconnect cycle.
+      try {
+        this.provider.removeAllListeners();
+        await this.provider.destroy();
+      } catch {
+        // Best-effort cleanup — ignore if already dead
+      }
+
       this.provider = new ethers.WebSocketProvider(config.chain.rpcWs);
       this.aave = new AaveProtocol(this.provider);
       await this.aave.initialize();
