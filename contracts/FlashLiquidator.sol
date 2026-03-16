@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.20;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @notice Minimal Aave V3 IPool interface
 interface IPool {
@@ -73,9 +73,18 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ─── Immutables ────────────────────────────────────────────────────────────
-    IPoolAddressesProvider public immutable override ADDRESSES_PROVIDER;
-    IPool public immutable override POOL;
+    IPoolAddressesProvider public immutable addressesProvider;
+    IPool public immutable pool;
     ISwapRouter public immutable SWAP_ROUTER;
+
+    // ─── IFlashLoanSimpleReceiver: return as address ────────────────────────
+    function ADDRESSES_PROVIDER() external view override returns (address) {
+        return address(addressesProvider);
+    }
+
+    function POOL() external view override returns (address) {
+        return address(pool);
+    }
 
     // ─── Constants ─────────────────────────────────────────────────────────────
     uint24 public constant DEFAULT_POOL_FEE = 3000; // 0.3 % Uniswap pool fee tier
@@ -106,8 +115,8 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         address _addressesProvider,
         address _swapRouter
     ) Ownable(msg.sender) {
-        ADDRESSES_PROVIDER = IPoolAddressesProvider(_addressesProvider);
-        POOL = IPool(ADDRESSES_PROVIDER.getPool());
+        addressesProvider = IPoolAddressesProvider(_addressesProvider);
+        pool = IPool(addressesProvider.getPool());
         SWAP_ROUTER = ISwapRouter(_swapRouter);
     }
 
@@ -137,7 +146,7 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         );
 
         // Request flash loan — callback will handle everything
-        POOL.flashLoanSimple(
+        pool.flashLoanSimple(
             address(this),
             debtAsset,
             debtToCover,
@@ -161,7 +170,7 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         address initiator,      // must be this contract
         bytes calldata params
     ) external override returns (bool) {
-        if (msg.sender != address(POOL)) revert OnlyPool();
+        if (msg.sender != address(pool)) revert OnlyPool();
         if (initiator != address(this)) revert OnlySelf();
 
         (
@@ -172,11 +181,11 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         ) = abi.decode(params, (address, address, uint24, uint256));
 
         // ── Step 1: Approve debt repayment to Pool and liquidate ──────────────
-        IERC20(asset).safeApprove(address(POOL), amount);
+        IERC20(asset).forceApprove(address(pool), amount);
 
         uint256 collateralBefore = IERC20(collateralAsset).balanceOf(address(this));
 
-        IPool(address(POOL)).liquidationCall(
+        pool.liquidationCall(
             collateralAsset,
             asset,          // debtAsset
             borrower,
@@ -190,7 +199,7 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         // ── Step 2: Swap collateral → debt asset ──────────────────────────────
         uint256 repaymentNeeded = amount + premium;
 
-        IERC20(collateralAsset).safeApprove(address(SWAP_ROUTER), collateralReceived);
+        IERC20(collateralAsset).forceApprove(address(SWAP_ROUTER), collateralReceived);
 
         uint256 amountOut = SWAP_ROUTER.exactInputSingle(
             ISwapRouter.ExactInputSingleParams({
@@ -211,7 +220,7 @@ contract FlashLiquidator is IFlashLoanSimpleReceiver, Ownable, ReentrancyGuard {
         if (profit < minProfit) revert InsufficientProfit();
 
         // ── Step 3: Approve Aave to pull repayment ────────────────────────────
-        IERC20(asset).safeApprove(address(POOL), repaymentNeeded);
+        IERC20(asset).forceApprove(address(pool), repaymentNeeded);
 
         // ── Step 4: Send profit to owner ──────────────────────────────────────
         if (profit > 0) {

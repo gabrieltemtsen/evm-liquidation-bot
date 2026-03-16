@@ -1,8 +1,12 @@
 node_modules/
 dist/
+dist-hardhat/
 cache/
 artifacts/
 .env
 *.env.local
 coverage/
 typechain-types/
+deployments/
+hardhat.config.ts.bak
+

@@ -21,10 +21,7 @@
     "exactOptionalPropertyTypes": false
   },
   "include": [
-    "bot/src/**/*.ts",
-    "scripts/**/*.ts",
-    "test/**/*.ts",
-    "hardhat.config.ts"
+    "bot/src/**/*.ts"
   ],
   "exclude": [
     "node_modules",
